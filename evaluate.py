@@ -36,12 +36,12 @@ def generate_testset():
 
 
 from ragas import evaluate
-from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+from ragas.metrics.collections import faithfulness, answer_relevancy, context_precision, context_recall
 from datasets import Dataset
 from rag import ask_with_sources
 import pandas as pd
+
 def run_evaluation():
-    # Load generated testset
     df = pd.read_csv("testset.csv")
     
     results = []
@@ -61,8 +61,11 @@ def run_evaluation():
             "retrieved_contexts": sources
         })
     
-    # Convert to RAGAS dataset
     dataset = Dataset.from_list(results)
+    
+    # Wrap LLM and embeddings for RAGAS
+    llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
+    embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
     
     print("\nEvaluating with RAGAS...")
     scores = evaluate(
@@ -72,17 +75,17 @@ def run_evaluation():
             answer_relevancy,
             context_precision,
             context_recall
-        ]
+        ],
+        llm=llm,
+        embeddings=embeddings
     )
     
     print("\n--- RAGAS SCORES ---")
     print(scores)
     
-    # Save detailed results
     scores_df = scores.to_pandas()
     scores_df.to_csv("evaluation_results.csv", index=False)
     print("\nDetailed results saved to evaluation_results.csv")
-
 
 if __name__ == "__main__":
     # generate_testset()
