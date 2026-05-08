@@ -1,0 +1,66 @@
+import os
+print("Script started") 
+from dotenv import load_dotenv
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+
+load_dotenv()
+vectorstore_path = "vectorstore/"
+
+def load_vectorstore():
+    if not os.path.exists(vectorstore_path):
+        raise FileNotFoundError(f"Vectorstore not found at {vectorstore_path}. Please run the embedding script first.")
+    embeddings = OpenAIEmbeddings()
+    return Chroma(persist_directory=vectorstore_path, embedding_function=embeddings)
+    
+def build_qa_chain(vectorstore):
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+
+    prompt_template = (
+        "You are a helpful assistant for Lumos student organization.\n"
+        "Use the following context to answer the question.\n"
+        "Always mention which document your answer is based on.\n"
+        "If you don't know the answer, say 'I don't have enough information about that.'\n\n"
+        "Context:\n"
+        "{context}\n\n"
+        "Question: {question}\n\n"
+        "Answer:"
+    )
+
+
+
+
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["context", "question"]
+    )
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": prompt}
+    )
+    return qa_chain
+
+
+def ask(question):
+    vectorstore = load_vectorstore()
+    qa_chain = build_qa_chain(vectorstore)
+
+    result = qa_chain.invoke({"query": question})
+
+    print("\n--- ANSWER ---")
+    print(result["result"])
+    print("\n--- SOURCES ---")
+    for doc in result["source_documents"]:
+        print(f"- {doc.metadata.get('source', 'unknown')}")
+
+if __name__ == "__main__":
+    question = input("Ask a question about Lumos: ")
+    ask(question)
+    print("\nDone.")
+
