@@ -7,6 +7,7 @@ from pptx import Presentation
 from docx import Document as DocxDocument
 from pdf2image import convert_from_path
 import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 from langchain_core.documents import Document
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -221,7 +222,7 @@ def load_documents():
 
             except Exception as e:
                 print(f"  Error loading {file}: {e}")
-
+        break
     print(f"\nLoaded {file_count} files ({len(all_documents)} pages total)")
     return all_documents
 
@@ -248,5 +249,54 @@ def ingest_documents():
     save_documents(chunks)
     print("Done!")
 
+
+def ingest_single_file(filepath):
+    """Ingest a single file and add it to the existing vector store."""
+    filename = os.path.basename(filepath)
+    print(f"Ingesting {filename}...")
+    
+    # Load the file
+    try:
+        if filepath.endswith(".pdf"):
+            docs = load_pdf(filepath)
+        elif filepath.endswith(".pptx"):
+            docs = load_pptx(filepath)
+        elif filepath.endswith(".docx"):
+            docs = load_docx(filepath)
+        elif filepath.endswith(".csv"):
+            docs = load_csv(filepath)
+        elif filepath.endswith(".xlsx"):
+            docs = load_xlsx(filepath)
+        elif filepath.endswith(".txt") or filepath.endswith(".md"):
+            loader = TextLoader(filepath, encoding="utf-8")
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata["doc_type"] = "document"
+        else:
+            raise ValueError(f"Unsupported file type: {filename}")
+    except Exception as e:
+        raise Exception(f"Could not load {filename}: {e}")
+
+    # Chunk the new docs
+    chunks = chunk_documents(docs)
+    print(f"Created {len(chunks)} chunks from {filename}")
+
+    # Add to existing vector store
+    embeddings = OpenAIEmbeddings()
+    vectorstore = Chroma(
+        persist_directory=VECTORSTORE_PATH,
+        embedding_function=embeddings,
+        collection_name="knowledge_base"
+    )
+    vectorstore.add_documents(chunks)
+    print(f"Added to vector store")
+
+    # Update pickle file
+    existing_docs = load_saved_documents()
+    updated_docs = existing_docs + chunks
+    save_documents(updated_docs)
+    print(f"Updated BM25 documents — total: {len(updated_docs)} chunks")
+
+    return len(chunks)
 if __name__ == "__main__":
     ingest_documents()

@@ -8,6 +8,8 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers.ensemble import EnsembleRetriever
+from functools import lru_cache
+
 
 
 load_dotenv()
@@ -103,8 +105,11 @@ def build_prompt():
         "3. Connect information across different chunks and pages to form a complete answer.\n"
         "4. If multiple people are mentioned, list ALL of them with their descriptions.\n"
         "5. Never say there is 'no further information' if there is any description in the chunks.\n"
-        "6. Always cite which document and page your answer comes from.\n"
+        "6. Do NOT include source references inside your answer text.\n"
         "7. If the answer truly cannot be found in any chunk, say so clearly.\n\n"
+        "At the end of your answer, add a line starting with 'SOURCES_USED:' followed by "
+        "a comma separated list of ONLY the source filenames you actually used.\n"
+        "Example: SOURCES_USED: filename1.pdf, filename2.md\n\n"
         "Context chunks:\n{context}\n\n"
         "Question: {question}\n\n"
         "Answer:"
@@ -112,10 +117,21 @@ def build_prompt():
 
 # ── Ask ───────────────────────────────────────────────────────────────────────
 
-def ask(question):
+@lru_cache(maxsize=1)
+def get_cached_documents():
+    return load_saved_documents()
+
+@lru_cache(maxsize=1)
+def get_cached_retriever():
     vectorstore = load_vectorstore()
-    all_documents = load_saved_documents()
-    retriever = build_retriever(vectorstore, all_documents)
+    documents = get_cached_documents()
+    return build_retriever(vectorstore, documents)
+
+
+def ask(question):
+    # vectorstore = load_vectorstore()
+    all_documents = get_cached_documents()
+    retriever = get_cached_retriever()
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
     # Retrieve and expand with neighboring pages
@@ -147,13 +163,12 @@ def ask(question):
             print(f"- {ref}")
 
 def ask_with_sources(question):
-    vectorstore = load_vectorstore()
-    all_documents = load_saved_documents()
-    retriever = build_retriever(vectorstore, all_documents)
+    all_documents = get_cached_documents()
+    retriever = get_cached_retriever()
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
     retrieved_docs = retriever.invoke(question)
-    expanded_docs = expand_with_neighbors(retrieved_docs, all_documents)
+    expanded_docs = expand_with_neighbors(retrieved_docs, all_documents, window=1)
 
     context = "\n\n---\n\n".join([
         f"[Source: {doc.metadata.get('source', 'unknown')}, Page: {doc.metadata.get('page', 'N/A')}]\n{doc.page_content}"
@@ -162,19 +177,42 @@ def ask_with_sources(question):
 
     prompt = build_prompt()
     llm_chain = prompt | llm | StrOutputParser()
-    answer = llm_chain.invoke({"context": context, "question": question})
+    full_response = llm_chain.invoke({"context": context, "question": question})
 
-    seen = set()
-    sources = []
-    for doc in expanded_docs:
-        source = doc.metadata.get('source', 'unknown')
-        page = doc.metadata.get('page', '')
-        ref = f"{source} (page {page})" if page != '' else source
-        if ref not in seen:
-            seen.add(ref)
-            sources.append(ref)
+    # Split answer and sources
+    if "SOURCES_USED:" in full_response:
+        parts = full_response.split("SOURCES_USED:")
+        answer = parts[0].strip()
+        sources_line = parts[1].strip()
+        # Parse source filenames
+        raw_sources = [s.strip() for s in sources_line.split(",") if s.strip()]
+        # Match to actual file paths
+        sources = []
+        for raw in raw_sources:
+            for doc in expanded_docs:
+                doc_source = doc.metadata.get("source", "")
+                if raw.lower() in doc_source.lower() or doc_source.lower().endswith(raw.lower()):
+                    ref = doc_source
+                    if ref not in sources:
+                        sources.append(ref)
+                    break
+    else:
+        # Fallback to retrieved docs if LLM didn't follow format
+        answer = full_response
+        seen = set()
+        sources = []
+        for doc in retrieved_docs:
+            source = doc.metadata.get('source', 'unknown')
+            if source not in seen:
+                seen.add(source)
+                sources.append(source)
+    # At the end of ask_with_sources, before return:
+    if not isinstance(answer, str):
+        answer = str(answer)
+    answer = answer.replace("[]", "").replace("[ ]", "").strip()
 
     return answer, sources
+
 
 if __name__ == "__main__":
     question = input("Ask a question about Lumos: ")
